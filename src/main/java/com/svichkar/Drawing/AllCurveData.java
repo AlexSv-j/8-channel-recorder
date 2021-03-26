@@ -38,9 +38,7 @@ public class AllCurveData extends JPanel {
     }
 
     public void addCurveToListCurve() {
-        System.out.println("Initialization curve");
         makeLineX();
-        //curveList.add(positionX);
         curveList.add(Curve1);
         curveList.add(Curve2);
         curveList.add(Curve3);

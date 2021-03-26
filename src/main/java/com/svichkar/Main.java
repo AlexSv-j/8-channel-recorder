@@ -49,9 +49,9 @@ public class Main {
         JFrame mainJFrame = new JFrame("Recorder 8ch");
         mainJFrame.setBounds(screenSize.width / 2 - 400,
                 screenSize.height / 2 - 300, 800, 600);
-        mainJFrame.setVisible(true);
         mainJFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        mainJFrame.setIconImage(Toolkit.getDefaultToolkit().getImage("icon.png"));
+        mainJFrame.setIconImage(new ImageIcon("src/main/java/com/svichkar/icon.png").getImage());
+        mainJFrame.setVisible(true);
 
         return mainJFrame;
     }
