@@ -1,0 +1,586 @@
+/*******************************************************
+This program was created by the
+CodeWizardAVR V3.08 Evaluation
+Automatic Program Generator
+
+Date    : 23.03.2021
+Author  : Svichkar Alex
+
+Chip type               : ATmega16
+Program type            : Application
+AVR Core Clock frequency: 11,059200 MHz
+Memory model            : Small
+External RAM size       : 0
+Data Stack size         : 256
+*******************************************************/
+
+#include <mega16.h>
+#include <delay.h>
+#include <stdio.h>
+#include <string.h>
+
+int c = 0;
+
+// Voltage Reference: Int., cap. on AREF
+//#define ADC_VREF_TYPE ((0<<REFS1) | (0<<REFS0) | (1<<ADLAR) | (0<<MUX4) | (0<<MUX3) | (0<<MUX2) | (0<<MUX1) | (0<<MUX0))//External voltage reference
+//#define ADC_VREF_TYPE ((1<<REFS1) | (1<<REFS0) | (1<<ADLAR) | (0<<MUX4) | (0<<MUX3) | (0<<MUX2) | (0<<MUX1) | (0<<MUX0))//Inner voltage reference
+#define ADC_VREF_TYPE ((1<<REFS1) | (1<<REFS0) | (1<<ADLAR) | (0<<MUX4) | (0<<MUX3) | (0<<MUX2) | (0<<MUX1) | (0<<MUX0))
+
+// Timer 0 output compare interrupt service routine прерывание при совпадении TCNT и OCR
+interrupt [TIM0_COMP] void timer0_comp_isr(void)
+{
+	c = 1;
+}
+
+//---------------------------------------------------------------------------------------
+
+#define  SIZE_BUF 255
+#define COUNTMASSIVELENGHT(x)  (sizeof(x) / sizeof((x)[0]))
+
+//Receive buffer
+unsigned char usartRxBuf[SIZE_BUF];
+unsigned char rxBufTail = 0;
+unsigned char rxBufHead = 0;
+unsigned char rxCount = 0;
+
+
+//возвращает колличество символов находящихся в приемном буфере
+int USART_GetRxCount(void)
+{
+	return rxCount;
+}
+
+//Clear receive buffer
+void USART_FlushRxBuf(void)
+{
+#asm("cli");
+	rxBufTail = 0;
+	rxBufHead = 0;
+	rxCount = 0;
+#asm("sei");
+}
+
+//Read buffer
+unsigned char USART_GetChar(void)
+{
+	unsigned char sym;
+	if (rxCount > 0)                      //if recieve buffer is not empty
+		{
+		sym = usartRxBuf[rxBufHead];        //read a symbol
+		rxBufHead++;                        //increment the buffer head index
+		rxCount--;                          //reduce the symbol counter
+		if (rxBufHead == SIZE_BUF) rxBufHead = 0;
+		return sym;                         //return the read symbol
+		};
+	return 0;
+}
+
+//Interrupt at the end of receive
+interrupt [USART_RXC]  void usart_rx_isr(void)
+{
+	if (rxCount < SIZE_BUF)                 //check buffer is not full
+		{
+		usartRxBuf[rxBufTail] = UDR;        //read the symbol from the UDR to the buffer
+		rxBufTail++;                             //increase the receiving buffer tail index
+		if (rxBufTail == SIZE_BUF) rxBufTail = 0;
+		rxCount++;                                 //increase the counter of received symbol
+		};
+}
+
+//---------------------------------------------------------------------------------------
+//send to UART
+
+//Transmit ring buffer
+unsigned char usartTxBuf[SIZE_BUF];
+unsigned char txBufTail = 0;
+unsigned char txBufHead = 0;
+unsigned char txCount = 0;
+
+//Clear transmit ring buffer
+void USART_FlushTxBuf(void)
+{
+#asm("cli");
+	txBufTail = 0;
+	txCount = 0;
+	txBufHead = 0;
+#asm("sei");
+}
+
+//Loading a symbol into the buffer
+void USART_PutChar(unsigned char symbol)
+{
+	if(((UCSRA & (1 << UDRE)) != 0) && (txCount == 0))
+		UDR = symbol;
+	else
+		{
+		if (txCount < SIZE_BUF)                         //if transmit buffer is not empty
+			{
+			usartTxBuf[txBufTail] = symbol;             //put the symbol in the buffer
+            txCount++;                                  //increase the symbol counter
+			txBufTail++;                                //increase the tail of buffer
+            if (txBufTail == SIZE_BUF) txBufTail = 0;;
+			};
+		}
+}
+
+
+//Loading a line into the buffer
+void USART_SendStr(unsigned char *data, int size)
+{
+	int index = 0;
+	while(index < size)
+		USART_PutChar(data[index++]);
+}
+
+interrupt [USART_TXC]  void usart_tx_isr(void)
+{
+	if (txCount > 0 )
+		{
+		UDR = usartTxBuf[txBufHead];         //write the symbol from the buffer to the UDR
+		txCount--;                           //reduce the symbol counter
+		txBufHead++;
+		if (txBufHead == SIZE_BUF) txBufHead = 0;
+		};
+}
+//-------------------------------------------------------------------------------------------------
+int quitFlag = 0;
+int flagStartRun = 0; // flag at the input to the ADC loop
+int singleCycle = 0; // flag at the input to the ADC loop, "stop' is pressed
+int timediv = 640; // amount of cycle per lap
+
+void switchInputSymbol (unsigned char data)
+{
+	switch(data)
+		{
+		case 66: // do ADC all time
+			flagStartRun = 1;
+            quitFlag = 0;
+			PORTB |= 0b00000001; //turn on diode "recording"
+			break;
+
+		case 67: // do ADC one lap
+			PORTB |= 0b00000001; //turn on diode "recording"
+			flagStartRun = 1;
+			singleCycle = 1;
+            quitFlag = 0;
+			break;
+
+		// Channel 1
+		case 68: // 15 V
+			DDRB &= 0b11111001;
+			break;
+
+		case 69: // 8 V
+			DDRB &= 0b11111011; //установить 0
+			DDRB |= 0b00000010; //установить 1
+			break;
+
+		case 70: // 3 V
+			DDRB &= 0b11111101;
+			DDRB |= 0b00000100;
+			break;
+
+		// Channel 2
+		case 71: // 15 V
+			DDRB &= 0b11100111;
+			break;
+
+		case 72: // 8 В
+			DDRB &= 0b11101111;
+			DDRB |= 0b1000;
+			break;
+
+		case 73: // 3 V
+			DDRB &= 0b11110111;
+			DDRB |= 0b10000;
+			break;
+
+		// Channel 3
+		case 74: // 15 V
+			DDRB &= 0b10011111;
+			break;
+
+		case 75: // 8 V
+			DDRB &= 0b10111111;
+			DDRB |= 0b100000;
+			break;
+
+		case 76: // 3 V
+			DDRB &= 0b11011111;
+			DDRB |= 0b1000000;
+			break;
+
+		// Channel 4
+		case 77: // 30 V
+			DDRB &= 0b01111111;
+			DDRD &= 0b11110011;
+			break;
+
+		case 78: // 15 V
+			DDRD &= 0b11110011;
+			DDRB |= 0b10000000;
+			break;
+
+		case 79: // 8 V
+			DDRB &= 0b01111111;
+			DDRD &= 0b11110111;
+			DDRD |= 0b00000100;
+			break;
+
+		case 80: // 3 V
+			DDRB &= 0b01111111;
+			DDRD &= 0b11111011;
+			DDRD |= 0b00001000;
+			break;
+
+		// Channel 5
+		case 81: // 30 V
+			DDRD &= 0b10001111;
+			break;
+
+		case 82: // 15 V
+			DDRD &= 0b10011111;
+			DDRD |= 0b10000;
+			break;
+
+		case 83: // 8 V
+			DDRD &= 0b10101111;
+			DDRD |= 0b100000;
+			break;
+
+		case 84: // 3 V
+			DDRD &= 0b11001111;
+			DDRD |= 0b1000000;
+			break;
+
+		// Channel 6
+		case 85: // 30 V
+			DDRD &= 0b01111111;
+			DDRC &= 0b11111100;
+			break;
+
+		case 86: // 15 V
+			DDRC &= 0b11111100;
+			DDRD |= 0b10000000;
+			break;
+
+		case 87: // 8 V
+			DDRD &= 0b01111111;
+			DDRC &= 0b11111101;
+			DDRC |= 0b00000001;
+			break;
+
+		case 88: // 3 V
+			DDRD &= 0b01111111;
+			DDRC &= 0b11111110;
+			DDRC |= 0b00000010;
+			break;
+
+		// Channel 7
+		case 89: // 30 V
+			DDRC &= 0b11100011;
+			break;
+
+		case 90: // 15 V
+			DDRC &= 0b11100111;
+			DDRC |= 0b100;
+			break;
+
+		case 97: // 8 V
+			DDRC &= 0b11101011;
+			DDRC |= 0b1000;
+			break;
+
+		case 98: // 3 V
+			DDRC &= 0b11110011;
+			DDRC |= 0b10000;
+			break;
+
+		// Channel 8
+		case 99: // 30 V
+			DDRC &= 0b00011111;
+			break;
+
+		case 100: // 15 V
+			DDRC &= 0b00111111;
+			DDRC |= 0b100000;
+			break;
+
+		case 101: // 8 V
+			DDRC &= 0b01011111;
+			DDRC |= 0b1000000;
+			break;
+
+		case 102: // 3 V
+			DDRC &= 0b10011111;
+			DDRC |= 0b10000000;
+			break;
+
+		case 103:
+			timediv = 640;
+			break;
+
+		case 104:
+			timediv = 1280;
+			break;
+
+		case 105:
+			timediv = 2560;
+			break;
+
+		case 106:
+			timediv = 6400;
+			break;
+
+		case 121: // stop ADC
+			quitFlag = 1;
+            flagStartRun = 0;
+			break;
+		};
+}
+
+void main(void)
+{
+    int connect = 0;
+	unsigned char connectResponce [] = {40, 42, 42, 42, 42, 111, 107, 41};
+	unsigned char takeData [] = {'t', 'a', 'k', 'e', 'D', 'a', 't', 'a'};
+	unsigned char begin [] = {42, 42, 'B', 'E', 'G', 'I', 'N', 42};
+	unsigned char the [] = {42, 42, 42, 42, 'T', 'H', 'E', 42};
+	unsigned char end [] = {42, 42, 42, 42, 'E', 'N', 'D', 42};
+	unsigned char data = 0; // variable for get data from USART
+	unsigned char adc_data = 0; // variable for ADC result
+	int i = 0; // cycle on ADC channels
+	int j = 0; // cycle per one lap
+
+    // channel 1 - 15V
+	DDRB &= 0b11111001;
+    // channel 2 - 15 В
+	DDRB &= 0b11100111;
+    // channel 3 - 15 В
+	DDRB &= 0b10011111;
+    // channel 4 - 30 В
+	DDRB &= 0b01111111;
+	DDRD &= 0b11110011;
+    // channel 5 - 30 В
+	DDRD &= 0b10001111;
+    // channel 6 - 30 В
+	DDRD &= 0b01111111;
+	DDRC &= 0b11111100;
+    // channel 7 - 30 В
+	DDRC &= 0b11100011;
+    // channel 8 - 30 В
+	DDRC &= 0b00011111;
+
+	// Global enable interrupts
+#asm("sei")
+
+		{
+		// Declare your local variables here
+
+		// Input/Output Ports initialization
+		// Port A initialization
+		// Function: Bit7=In Bit6=In Bit5=In Bit4=In Bit3=In Bit2=In Bit1=In Bit0=In
+		DDRA = (0 << DDA7) | (0 << DDA6) | (0 << DDA5) | (0 << DDA4) | (0 << DDA3) | (0 << DDA2) | (0 << DDA1) | (0 << DDA0);
+		// State: Bit7=T Bit6=T Bit5=T Bit4=T Bit3=T Bit2=T Bit1=T Bit0=T
+		PORTA = (0 << PORTA7) | (0 << PORTA6) | (0 << PORTA5) | (0 << PORTA4) | (0 << PORTA3) | (0 << PORTA2) | (0 << PORTA1) | (0 << PORTA0);
+
+		// Port B initialization
+		// Function: Bit7=In Bit6=In Bit5=In Bit4=In Bit3=In Bit2=In Bit1=In Bit0=In
+		DDRB = (0 << DDB7) | (0 << DDB6) | (0 << DDB5) | (0 << DDB4) | (0 << DDB3) | (0 << DDB2) | (0 << DDB1) | (1 << DDB0);
+		// State: Bit7=T Bit6=T Bit5=T Bit4=T Bit3=T Bit2=T Bit1=T Bit0=T
+		PORTB = (0 << PORTB7) | (0 << PORTB6) | (0 << PORTB5) | (0 << PORTB4) | (0 << PORTB3) | (0 << PORTB2) | (0 << PORTB1) | (0 << PORTB0);
+
+		// Port C initialization
+		// Function: Bit7=In Bit6=In Bit5=In Bit4=In Bit3=In Bit2=In Bit1=In Bit0=In
+		DDRC = (0 << DDC7) | (0 << DDC6) | (0 << DDC5) | (0 << DDC4) | (0 << DDC3) | (0 << DDC2) | (0 << DDC1) | (0 << DDC0);
+		// State: Bit7=T Bit6=T Bit5=T Bit4=T Bit3=T Bit2=T Bit1=T Bit0=T
+		PORTC = (0 << PORTC7) | (0 << PORTC6) | (0 << PORTC5) | (0 << PORTC4) | (0 << PORTC3) | (0 << PORTC2) | (0 << PORTC1) | (0 << PORTC0);
+
+		// Port D initialization
+		// Function: Bit7=In Bit6=In Bit5=In Bit4=In Bit3=In Bit2=In Bit1=In Bit0=In
+		DDRD = (0 << DDD7) | (0 << DDD6) | (0 << DDD5) | (0 << DDD4) | (0 << DDD3) | (0 << DDD2) | (0 << DDD1) | (0 << DDD0);
+		// State: Bit7=T Bit6=T Bit5=T Bit4=T Bit3=T Bit2=T Bit1=T Bit0=T
+		PORTD = (0 << PORTD7) | (0 << PORTD6) | (0 << PORTD5) | (0 << PORTD4) | (0 << PORTD3) | (0 << PORTD2) | (0 << PORTD1) | (0 << PORTD0);
+
+		// Timer/Counter 0 initialization
+		// Clock source: System Clock
+		// Clock value: 10,800 kHz division ratio = 1024 (11052000/1024)
+		// Mode: CTC top=OCR0 reset the timer when a match is made
+		// OC0 output: Disconnected
+		// Timer Period: 0,092593 ms
+		TCCR0 = (0 << WGM00) | (0 << COM01) | (0 << COM00) | (1 << WGM01) | (1 << CS02) | (0 << CS01) | (1 << CS00);
+		TCNT0 = 0;
+		OCR0 = 0xA8; // count to a number 169 (begin from null), frequency 64 Гц
+
+		// Timer/Counter 1 initialization
+		// Clock source: System Clock
+		// Clock value: Timer1 Stopped
+		// Mode: Normal top=0xFFFF
+		// OC1A output: Disconnected
+		// OC1B output: Disconnected
+		// Noise Canceler: Off
+		// Input Capture on Falling Edge
+		// Timer1 Overflow Interrupt: Off
+		// Input Capture Interrupt: Off
+		// Compare A Match Interrupt: Off
+		// Compare B Match Interrupt: Off
+		TCCR1A = (0 << COM1A1) | (0 << COM1A0) | (0 << COM1B1) | (0 << COM1B0) | (0 << WGM11) | (0 << WGM10);
+		TCCR1B = (0 << ICNC1) | (0 << ICES1) | (0 << WGM13) | (0 << WGM12) | (0 << CS12) | (0 << CS11) | (0 << CS10);
+		TCNT1H = 0x00;
+		TCNT1L = 0x00;
+		ICR1H = 0x00;
+		ICR1L = 0x00;
+		OCR1AH = 0x00;
+		OCR1AL = 0x00;
+		OCR1BH = 0x00;
+		OCR1BL = 0x00;
+
+		// Timer/Counter 2 initialization
+		// Clock source: System Clock
+		// Clock value: Timer2 Stopped
+		// Mode: Normal top=0xFF
+		// OC2 output: Disconnected
+		ASSR = 0 << AS2;
+		TCCR2 = (0 << PWM2) | (0 << COM21) | (0 << COM20) | (0 << CTC2) | (0 << CS22) | (0 << CS21) | (0 << CS20);
+		TCNT2 = 0x00;
+		OCR2 = 0x00;
+
+		// Timer(s)/Counter(s) Interrupt(s) initialization
+		//1<<OCIE0 abort on match
+		TIMSK = (0 << OCIE2) | (0 << TOIE2) | (0 << TICIE1) | (0 << OCIE1A) | (0 << OCIE1B) | (0 << TOIE1) | (1 << OCIE0) | (0 << TOIE0);
+
+		// External Interrupt(s) initialization
+		// INT0: Off
+		// INT1: Off
+		// INT2: Off
+		MCUCR = (0 << ISC11) | (0 << ISC10) | (0 << ISC01) | (0 << ISC00);
+		MCUCSR = (0 << ISC2);
+
+
+		// USART initialization
+		// Communication Parameters: 8 Data, 1 Stop, No Parity
+		// USART Receiver: On
+		// USART Transmitter: On
+		// USART Mode: Asynchronous
+		// USART Baud Rate: 57600
+		UCSRA = (0 << RXC) | (0 << TXC) | (0 << UDRE) | (0 << FE) | (0 << DOR) | (0 << UPE) | (0 << U2X) | (0 << MPCM);
+		UCSRB = (1 << RXCIE) | (1 << TXCIE) | (0 << UDRIE) | (1 << RXEN) | (1 << TXEN) | (0 << UCSZ2) | (0 << RXB8) | (0 << TXB8);
+		UCSRC = (1 << URSEL) | (0 << UMSEL) | (0 << UPM1) | (0 << UPM0) | (0 << USBS) | (1 << UCSZ1) | (1 << UCSZ0) | (0 << UCPOL);
+		UBRRH = 0x00;
+		UBRRL = 0xB;
+
+		// Analog Comparator initialization
+		// Analog Comparator: Off
+		// The Analog Comparator's positive input is
+		// connected to the AIN0 pin
+		// The Analog Comparator's negative input is
+		// connected to the AIN1 pin
+		ACSR = (1 << ACD) | (0 << ACBG) | (0 << ACO) | (0 << ACI) | (0 << ACIE) | (0 << ACIC) | (0 << ACIS1) | (0 << ACIS0);
+
+		// ADC initialization
+		// ADC Clock frequency: 173,000 kHz
+		// ADC Voltage Reference: Int., cap. on AREF
+		// ADC Auto Trigger Source: ADC Stopped
+		ADMUX = ADC_VREF_TYPE;
+		ADCSRA = (1 << ADEN) | (0 << ADSC) | (0 << ADATE) | (1 << ADIF) | (0 << ADIE) | (1 << ADPS2) | (1 << ADPS1) | (0 << ADPS0);
+		SFIOR = (0 << ADTS2) | (0 << ADTS1) | (0 << ADTS0);
+
+		// SPI initialization
+		// SPI disabled
+		SPCR = (0 << SPIE) | (0 << SPE) | (0 << DORD) | (0 << MSTR) | (0 << CPOL) | (0 << CPHA) | (0 << SPR1) | (0 << SPR0);
+
+		// TWI initialization
+		// TWI disabled
+		TWCR = (0 << TWEA) | (0 << TWSTA) | (0 << TWSTO) | (0 << TWEN) | (0 << TWIE);
+		}
+
+	USART_FlushTxBuf();
+	USART_FlushRxBuf();
+
+    // connect to java-aplication
+    while(connect == 0)
+		{
+		if (USART_GetRxCount() == 4)
+			{
+			unsigned char connectRequest[4];
+			int symbolCount = 0;
+
+			while(symbolCount < 4)
+				{
+				connectRequest[symbolCount] = USART_GetChar();
+				symbolCount++;
+				};
+
+			if(connectRequest[0] == 'A' && connectRequest[1] == 'T' && connectRequest[2] == 'I' && connectRequest[3] ==  '1')
+				{
+				USART_SendStr(connectResponce, COUNTMASSIVELENGHT(connectResponce));
+				connect = 1;
+				};
+			};
+		};
+
+
+	while(1)
+		{
+		if (!(rxCount == 0)) //switch the outputs depending on the received symbol
+			{
+			data = USART_GetChar();
+			switchInputSymbol(data);
+			data = 0;
+			};
+
+        while(flagStartRun == 1)
+			{
+            adc_data = 0;
+            USART_SendStr(begin, COUNTMASSIVELENGHT(begin));
+
+            for (j = 0; j < timediv; j++) //cycles in one lap
+				{
+	            USART_SendStr(takeData, COUNTMASSIVELENGHT(takeData));
+				while (!(c == 1));//wait for timer0 overflow flag
+                for (i = 0; i <= 7; i++) //cycle by ADC channels
+					{
+					#asm("cli");
+					ADCSRA.6 = 1;  // begin ADC
+					while((ADCSRA & (1 << ADIF)) == 0); //wait while  ADC is finished (ADIF = 0)
+                    #asm("sei")
+
+                    adc_data = ADCH; // Read the AD conversion result adc_data
+
+					USART_PutChar(adc_data); //send the data from ADC to UASRT
+
+					if(ADMUX < 0xE8) ADMUX++;; //switching the ADC channel
+					};
+
+            	ADMUX &= 0xE0; //Restore the original ADMUX value
+                c = 0; //restore the comparison register flag (time counter)
+
+				USART_SendStr(the, COUNTMASSIVELENGHT(the));
+
+                if (!(rxCount == 0)) //switch the outputs depending on the received symbol
+					{
+					data = USART_GetChar();
+					switchInputSymbol(data);
+              		data = 0;
+					};
+
+				if (quitFlag == 1)
+					{
+					flagStartRun = 0;
+                    // turn off diode "recording"
+		        	PORTB = 0b00000000;
+                    break;
+					};
+                };
+
+                if (singleCycle == 1)
+					{
+      				USART_SendStr(end, COUNTMASSIVELENGHT(end));
+					flagStartRun = 0;
+                    singleCycle = 0;
+                    //turn off diode "recording"
+		        	PORTB = 0b00000000;
+                    };
+            };
+        };
+}
